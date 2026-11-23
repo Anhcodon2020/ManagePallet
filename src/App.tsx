@@ -6,6 +6,7 @@ import {
   ExternalLink,
   FileSpreadsheet,
   LayoutDashboard,
+  Lock,
   LogOut,
   QrCode,
   RefreshCw,
@@ -27,10 +28,14 @@ import {
 import {
   appendPalletRecord,
   deletePalletRecord,
+  extractSpreadsheetId,
   fetchPalletRecords,
+  fetchSharedSheetConfig,
+  getSpreadsheetMetadata,
   updatePalletRecord,
   uploadDamagePhotoToDrive,
   WorkspaceAuthError,
+  WorkspacePermissionError,
 } from './services/googleWorkspace';
 import {
   ActiveView,
@@ -55,6 +60,14 @@ function loadSavedSheetConfig(): SpreadsheetConfig | null {
   }
 }
 
+function getUrlSheetParams(): { sheetId: string | null; tab: string | null } {
+  const params = new URLSearchParams(window.location.search);
+  const rawId = params.get('sheetId');
+  const validId = rawId ? extractSpreadsheetId(rawId) : null;
+  const tab = params.get('tab')?.trim() || null;
+  return { sheetId: validId, tab };
+}
+
 function formatViTimestamp(date: Date): string {
   const pad = (n: number) => String(n).padStart(2, '0');
   return `${pad(date.getDate())}/${pad(date.getMonth() + 1)}/${date.getFullYear()} ${pad(
@@ -70,9 +83,13 @@ export default function App() {
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
 
+  const [adminEmail, setAdminEmail] = useState<string>('');
+  const [sharedConfigLoaded, setSharedConfigLoaded] = useState(false);
   const [sheetConfig, setSheetConfig] = useState<SpreadsheetConfig | null>(() =>
     loadSavedSheetConfig()
   );
+  const [permissionDenied, setPermissionDenied] = useState(false);
+
   const [activeView, setActiveView] = useState<ActiveView>('scan');
   const [records, setRecords] = useState<PalletRecord[]>([]);
   const [loadingRecords, setLoadingRecords] = useState(false);
@@ -80,6 +97,11 @@ export default function App() {
   const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [selectedRecord, setSelectedRecord] = useState<PalletRecord | null>(null);
+
+  const isAdmin =
+    Boolean(user?.email) &&
+    Boolean(adminEmail) &&
+    user!.email!.trim().toLowerCase() === adminEmail.trim().toLowerCase();
 
   useEffect(() => {
     const unsubscribe = initAuth(
@@ -99,16 +121,135 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
+  const resolveSharedDatabase = useCallback(
+    async (activeToken: string | null) => {
+      try {
+        const { config: serverConfig, adminEmail: serverAdmin } =
+          await fetchSharedSheetConfig();
+        if (serverAdmin) {
+          setAdminEmail(serverAdmin);
+        }
+
+        const urlParams = getUrlSheetParams();
+
+        // Priority 1: Explicit team invite link (?sheetId=...&tab=...)
+        if (urlParams.sheetId && activeToken) {
+          try {
+            const meta = await getSpreadsheetMetadata(
+              activeToken,
+              urlParams.sheetId
+            );
+            const matchedTab =
+              meta.sheets.find((s) => s.title === urlParams.tab) ||
+              meta.sheets[0];
+            if (matchedTab) {
+              const resolved: SpreadsheetConfig = {
+                spreadsheetId: urlParams.sheetId,
+                title: meta.title,
+                sheetName: matchedTab.title,
+                sheetId: matchedTab.sheetId,
+                url: meta.url,
+                configuredBy: serverAdmin || undefined,
+              };
+              setSheetConfig(resolved);
+              setPermissionDenied(false);
+              window.localStorage.setItem(
+                SHEET_CONFIG_STORAGE_KEY,
+                JSON.stringify(resolved)
+              );
+              setSharedConfigLoaded(true);
+              return;
+            }
+          } catch (err) {
+            if (err instanceof WorkspacePermissionError) {
+              setSheetConfig({
+                spreadsheetId: urlParams.sheetId,
+                title: 'Google Sheet dùng chung',
+                sheetName: urlParams.tab || 'Trang tính mặc định',
+                sheetId: 0,
+                url: `https://docs.google.com/spreadsheets/d/${urlParams.sheetId}/edit`,
+                configuredBy: serverAdmin || undefined,
+              });
+              setPermissionDenied(true);
+              setSharedConfigLoaded(true);
+              return;
+            }
+          }
+        }
+
+        // Priority 2: Server-configured shared central Google Sheet
+        if (serverConfig) {
+          // If tab name came from env default without tab specified, resolve dynamically
+          if (!serverConfig.sheetName && activeToken) {
+            try {
+              const meta = await getSpreadsheetMetadata(
+                activeToken,
+                serverConfig.spreadsheetId
+              );
+              const firstTab = meta.sheets[0];
+              if (firstTab) {
+                const fullCfg: SpreadsheetConfig = {
+                  ...serverConfig,
+                  title: meta.title,
+                  sheetName: firstTab.title,
+                  sheetId: firstTab.sheetId,
+                  url: meta.url,
+                };
+                setSheetConfig(fullCfg);
+                setPermissionDenied(false);
+                window.localStorage.setItem(
+                  SHEET_CONFIG_STORAGE_KEY,
+                  JSON.stringify(fullCfg)
+                );
+                setSharedConfigLoaded(true);
+                return;
+              }
+            } catch (err) {
+              if (err instanceof WorkspacePermissionError) {
+                setSheetConfig(serverConfig);
+                setPermissionDenied(true);
+                setSharedConfigLoaded(true);
+                return;
+              }
+            }
+          }
+
+          setSheetConfig(serverConfig);
+          setPermissionDenied(false);
+          window.localStorage.setItem(
+            SHEET_CONFIG_STORAGE_KEY,
+            JSON.stringify(serverConfig)
+          );
+          setSharedConfigLoaded(true);
+          return;
+        }
+      } catch {
+        // Ignore network errors when reading optional shared config
+      } finally {
+        setSharedConfigLoaded(true);
+      }
+    },
+    []
+  );
+
+  // Load central shared database config on startup and after sign-in
+  useEffect(() => {
+    void resolveSharedDatabase(token);
+  }, [token, resolveSharedDatabase]);
+
   const handleSessionExpired = useCallback(() => {
     clearAccessToken();
     setToken(null);
     setNeedsAuth(true);
-    setAuthError('Phiên làm việc Google Workspace đã hết hạn. Vui lòng đăng nhập lại để tiếp tục đồng bộ.');
+    setAuthError(
+      'Phiên làm việc Google Workspace đã hết hạn. Vui lòng đăng nhập lại để tiếp tục đồng bộ.'
+    );
   }, []);
 
   const handleLogin = async () => {
     setIsLoggingIn(true);
     setAuthError(null);
+    setPermissionDenied(false);
     try {
       const result = await googleSignIn();
       setUser(result.user);
@@ -132,10 +273,15 @@ export default function App() {
     setNeedsAuth(true);
     setRecords([]);
     setSelectedRecord(null);
+    setPermissionDenied(false);
   };
 
-  const handleSelectSheetConfig = (config: SpreadsheetConfig) => {
+  const handleSelectSheetConfig = (
+    config: SpreadsheetConfig,
+    _isSharedGlobal: boolean
+  ) => {
     setSheetConfig(config);
+    setPermissionDenied(false);
     try {
       window.localStorage.setItem(SHEET_CONFIG_STORAGE_KEY, JSON.stringify(config));
     } catch {
@@ -146,7 +292,7 @@ export default function App() {
 
   const refreshRecords = useCallback(
     async (silent = false) => {
-      if (!token || !sheetConfig) return;
+      if (!token || !sheetConfig || !sheetConfig.sheetName) return;
       if (!silent) setLoadingRecords(true);
       try {
         const list = await fetchPalletRecords(
@@ -155,6 +301,7 @@ export default function App() {
           sheetConfig.sheetName
         );
         setRecords(list);
+        setPermissionDenied(false);
         setSyncError(null);
         setLastSyncedAt(
           new Date().toLocaleTimeString('vi-VN', {
@@ -166,6 +313,9 @@ export default function App() {
       } catch (err: unknown) {
         if (err instanceof WorkspaceAuthError) {
           handleSessionExpired();
+        } else if (err instanceof WorkspacePermissionError) {
+          setPermissionDenied(true);
+          setSyncError(null);
         } else {
           const msg =
             err instanceof Error
@@ -182,21 +332,21 @@ export default function App() {
 
   // Initial load when authenticated & sheet connected
   useEffect(() => {
-    if (token && sheetConfig) {
+    if (token && sheetConfig && sheetConfig.sheetName && !permissionDenied) {
       void refreshRecords(false);
     }
-  }, [token, sheetConfig, refreshRecords]);
+  }, [token, sheetConfig, permissionDenied, refreshRecords]);
 
   // Real-time background sync every 15 seconds while visible
   useEffect(() => {
-    if (!token || !sheetConfig || !autoRefresh) return;
+    if (!token || !sheetConfig || !autoRefresh || permissionDenied) return;
     const interval = window.setInterval(() => {
       if (document.visibilityState === 'visible') {
         void refreshRecords(true);
       }
     }, 15000);
     return () => window.clearInterval(interval);
-  }, [token, sheetConfig, autoRefresh, refreshRecords]);
+  }, [token, sheetConfig, autoRefresh, permissionDenied, refreshRecords]);
 
   const handleCreateReport = async (input: NewPalletReportInput) => {
     if (!token || !sheetConfig) {
@@ -219,7 +369,9 @@ export default function App() {
     const now = new Date();
     const recordId = `PLT-${now.getTime().toString().slice(-6)}`;
     const reporter =
-      user?.displayName || user?.email || 'Nhân viên kiểm kho';
+      user?.displayName
+        ? `${user.displayName} (${user.email ?? ''})`.trim()
+        : user?.email || 'Nhân viên kiểm kho';
 
     try {
       await appendPalletRecord(
@@ -244,6 +396,8 @@ export default function App() {
     } catch (err) {
       if (err instanceof WorkspaceAuthError) {
         handleSessionExpired();
+      } else if (err instanceof WorkspacePermissionError) {
+        setPermissionDenied(true);
       }
       throw err;
     }
@@ -264,6 +418,8 @@ export default function App() {
     } catch (err) {
       if (err instanceof WorkspaceAuthError) {
         handleSessionExpired();
+      } else if (err instanceof WorkspacePermissionError) {
+        setPermissionDenied(true);
       }
       throw err;
     }
@@ -283,6 +439,8 @@ export default function App() {
     } catch (err) {
       if (err instanceof WorkspaceAuthError) {
         handleSessionExpired();
+      } else if (err instanceof WorkspacePermissionError) {
+        setPermissionDenied(true);
       }
       throw err;
     }
@@ -312,8 +470,8 @@ export default function App() {
             <div className="hidden md:flex items-center gap-6 text-sm text-slate-600">
               <span>Quét mã QR</span>
               <span>Phân loại hư hỏng</span>
-              <span>Ảnh minh họa Drive</span>
-              <span>Đồng bộ Google Sheets</span>
+              <span>Ảnh minh họa</span>
+              <span>Dùng chung 1 Google Sheet</span>
             </div>
             <div className="shrink-0">
               <GoogleSignInButton
@@ -329,11 +487,22 @@ export default function App() {
           <div className="grid w-full grid-cols-1 gap-10 lg:grid-cols-12 lg:items-center">
             <div className="lg:col-span-7 space-y-6">
               <h1 className="text-3xl font-bold tracking-tight text-slate-900 sm:text-4xl leading-tight">
-                Quản lý pallet hư hỏng và báo cáo tình trạng theo thời gian thực
+                Quản lý pallet hư hỏng tập trung trên một cơ sở dữ liệu dùng chung
               </h1>
               <p className="max-w-xl text-base leading-relaxed text-slate-600">
-                Quét trực tiếp số series mã QR trên pallet khi nhập xuất kho, ghi nhận lỗi hư hỏng kèm hình ảnh thực tế và đồng bộ tức thì vào cơ sở dữ liệu Google Sheets của doanh nghiệp.
+                Mỗi nhân viên đăng nhập bằng chính tài khoản Google của mình để quét mã QR, báo cáo tình trạng pallet kèm ảnh chụp thực tế và ghi trực tiếp vào Google Sheet chung của kho — không cần tạo file mới.
               </p>
+
+              {sheetConfig && (
+                <div className="max-w-xl flex items-center gap-2.5 rounded-lg border border-slate-200 bg-white px-4 py-3 text-xs text-slate-600">
+                  <FileSpreadsheet className="h-4 w-4 shrink-0 text-emerald-700" />
+                  <span className="truncate">
+                    Database đang hoạt động:{' '}
+                    <strong className="text-slate-900">{sheetConfig.title}</strong>
+                    {sheetConfig.sheetName ? ` · ${sheetConfig.sheetName}` : ''}
+                  </span>
+                </div>
+              )}
 
               {authError && (
                 <div
@@ -351,12 +520,13 @@ export default function App() {
                   label={
                     isLoggingIn
                       ? 'Đang kết nối Google...'
-                      : 'Đăng nhập bằng Google để bắt đầu'
+                      : 'Đăng nhập bằng tài khoản Google của bạn'
                   }
                 />
                 {user?.email && (
                   <p className="text-xs text-slate-500">
-                    Tài khoản trước đó: <span className="font-medium text-slate-700">{user.email}</span> — cần cấp lại phiên làm việc.
+                    Tài khoản trước đó:{' '}
+                    <span className="font-medium text-slate-700">{user.email}</span> — cần đăng nhập lại phiên làm việc.
                   </p>
                 )}
               </div>
@@ -365,7 +535,7 @@ export default function App() {
             <div className="lg:col-span-5">
               <div className="rounded-xl border border-slate-200 bg-white p-6 space-y-5">
                 <h2 className="text-sm font-semibold text-slate-900">
-                  Quy trình kiểm soát tại kho &amp; nhà máy
+                  Quy trình làm việc nhóm trên cùng 1 Google Sheet
                 </h2>
 
                 <ol className="divide-y divide-slate-100 text-sm">
@@ -375,10 +545,10 @@ export default function App() {
                     </span>
                     <div>
                       <p className="font-semibold text-slate-900">
-                        Quét số series mã QR / Barcode
+                        Đăng nhập Google của từng nhân viên
                       </p>
                       <p className="mt-0.5 text-xs leading-relaxed text-slate-600">
-                        Nhận diện tức thì số series pallet qua camera điện thoại hoặc ảnh chụp, tự động cảnh báo lịch sử hư hỏng cũ.
+                        Hệ thống tự động ghi nhận tên &amp; email người báo cáo và kết nối thẳng vào Google Sheet dùng chung của quản trị viên.
                       </p>
                     </div>
                   </li>
@@ -388,10 +558,10 @@ export default function App() {
                     </span>
                     <div>
                       <p className="font-semibold text-slate-900">
-                        Phân loại chi tiết &amp; chụp ảnh hiện trường
+                        Quét QR, phân loại lỗi &amp; chụp ảnh hiện trường
                       </p>
                       <p className="mt-0.5 text-xs leading-relaxed text-slate-600">
-                        Chọn Nhập/Xuất, Pallet Nhà máy/Kho, mức độ Nhẹ/Nặng, đánh dấu lỗi (nứt chân pallet, gãy nan gỗ, mất thanh đỡ...) và đính kèm ảnh chụp thực tế.
+                        Quét số series pallet, chọn Nhập/Xuất, Nhà máy/Kho, mức độ Nhẹ/Nặng, loại hư hỏng cụ thể và chụp ảnh minh họa chia sẻ cho cả nhóm xem.
                       </p>
                     </div>
                   </li>
@@ -401,10 +571,10 @@ export default function App() {
                     </span>
                     <div>
                       <p className="font-semibold text-slate-900">
-                        Lưu trữ Google Sheets &amp; Thống kê thời gian thực
+                        Đồng bộ tức thì theo thời gian thực
                       </p>
                       <p className="mt-0.5 text-xs leading-relaxed text-slate-600">
-                        Dữ liệu ghi thẳng vào Google Sheets, ảnh lưu an toàn trên Google Drive của bạn, biểu đồ cập nhật liên tục mỗi 15 giây.
+                        Toàn bộ dữ liệu đổ về duy nhất 1 Google Sheet gốc, biểu đồ và nhật ký cập nhật tự động mỗi 15 giây.
                       </p>
                     </div>
                   </li>
@@ -417,7 +587,122 @@ export default function App() {
     );
   }
 
-  // Signed in, but no Spreadsheet selected yet
+  // Wait briefly for server shared config resolution after login
+  if (!sharedConfigLoaded) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-slate-50">
+        <div className="flex items-center gap-2.5 text-sm font-medium text-slate-600">
+          <RefreshCw className="h-4 w-4 animate-spin text-slate-900" />
+          <span>Đang kết nối cơ sở dữ liệu Google Sheet dùng chung...</span>
+        </div>
+      </div>
+    );
+  }
+
+  // Signed in, but current user doesn't have Editor permission on the shared Google Sheet
+  if (sheetConfig && permissionDenied) {
+    return (
+      <div className="min-h-screen bg-slate-50">
+        <header className="border-b border-slate-200 bg-white">
+          <div className="mx-auto flex max-w-5xl items-center justify-between gap-6 px-6 py-4">
+            <span className="text-lg font-bold tracking-tight text-slate-900 whitespace-nowrap shrink-0">
+              PalletGuard
+            </span>
+            <div className="flex items-center gap-4 text-sm">
+              <span className="hidden text-slate-600 sm:inline">
+                {user?.email}
+              </span>
+              <button
+                type="button"
+                onClick={handleLogout}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 whitespace-nowrap shrink-0"
+              >
+                <LogOut className="h-3.5 w-3.5" />
+                <span>Đổi tài khoản</span>
+              </button>
+            </div>
+          </div>
+        </header>
+
+        <main className="mx-auto max-w-xl px-6 py-14">
+          <div className="rounded-xl border border-slate-200 bg-white p-7 space-y-5">
+            <div className="flex items-start gap-3.5">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-amber-50 text-amber-700">
+                <Lock className="h-5 w-5" />
+              </div>
+              <div>
+                <h1 className="text-lg font-bold text-slate-900">
+                  Tài khoản chưa được cấp quyền chỉnh sửa Google Sheet
+                </h1>
+                <p className="mt-1 text-sm leading-relaxed text-slate-600">
+                  Bạn đang đăng nhập bằng{' '}
+                  <strong className="font-mono text-slate-900">
+                    {user?.email}
+                  </strong>
+                  , nhưng tài khoản này chưa có quyền truy cập vào cơ sở dữ liệu dùng chung{' '}
+                  <strong className="text-slate-900">{sheetConfig.title}</strong>.
+                </p>
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-xs leading-relaxed text-slate-600 space-y-1">
+              <p className="font-semibold text-slate-800">Hướng dẫn mở quyền nhanh:</p>
+              <p>
+                • Hãy nhờ quản trị viên{' '}
+                {adminEmail ? (
+                  <strong className="font-mono text-slate-900">{adminEmail}</strong>
+                ) : (
+                  'sở hữu bảng tính'
+                )}{' '}
+                mở file Google Sheet → bấm <strong>Chia sẻ (Share)</strong> → thêm email{' '}
+                <strong className="font-mono text-slate-900">{user?.email}</strong> với quyền{' '}
+                <strong>Người chỉnh sửa (Editor)</strong>.
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-3 pt-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setPermissionDenied(false);
+                  void resolveSharedDatabase(token);
+                }}
+                className="inline-flex min-h-[40px] items-center gap-2 rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-slate-800 whitespace-nowrap"
+              >
+                <RefreshCw className="h-4 w-4" />
+                <span>Kiểm tra lại quyền truy cập</span>
+              </button>
+
+              <a
+                href={sheetConfig.url}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex min-h-[40px] items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-50 whitespace-nowrap"
+              >
+                <span>Mở Google Sheet để gửi yêu cầu</span>
+                <ExternalLink className="h-4 w-4" />
+              </a>
+
+              {isAdmin && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSheetConfig(null);
+                    setPermissionDenied(false);
+                  }}
+                  className="text-xs font-medium text-blue-700 hover:underline whitespace-nowrap"
+                >
+                  Chọn bảng tính khác
+                </button>
+              )}
+            </div>
+          </div>
+        </main>
+      </div>
+    );
+  }
+
+  // Signed in, but no shared Spreadsheet connected yet
   if (!sheetConfig) {
     return (
       <div className="min-h-screen bg-slate-50">
@@ -445,7 +730,10 @@ export default function App() {
         <SheetSetupView
           accessToken={token}
           currentConfig={null}
+          isAdmin={isAdmin}
+          adminEmail={adminEmail}
           onSelectConfig={handleSelectSheetConfig}
+          onRetryFetchShared={() => resolveSharedDatabase(token)}
           onAuthError={handleSessionExpired}
         />
       </div>
@@ -478,7 +766,7 @@ export default function App() {
     },
     {
       id: 'settings',
-      label: 'Google Sheet & In QR',
+      label: 'Database & In QR',
       mobileLabel: 'Cài đặt',
       icon: Settings,
     },
@@ -488,7 +776,7 @@ export default function App() {
     dashboard: 'Tổng quan tình trạng pallet theo thời gian thực',
     scan: 'Quét mã QR & Ghi nhận pallet hư hỏng',
     records: 'Nhật ký dữ liệu pallet hư hỏng',
-    settings: 'Cấu hình Google Sheet & In tem mã QR',
+    settings: 'Database dùng chung & In tem mã QR',
   };
 
   return (
@@ -550,7 +838,7 @@ export default function App() {
                 {user?.displayName || 'Người dùng Google'}
               </p>
               <p className="truncate text-[11px] text-slate-500">
-                {user?.email}
+                {user?.email} · {isAdmin ? 'Quản trị' : 'Thành viên'}
               </p>
             </div>
             <button
@@ -670,6 +958,8 @@ export default function App() {
             <SettingsAndQRView
               accessToken={token}
               sheetConfig={sheetConfig}
+              isAdmin={isAdmin}
+              adminEmail={adminEmail}
               autoRefresh={autoRefresh}
               onToggleAutoRefresh={setAutoRefresh}
               onSelectConfig={handleSelectSheetConfig}
@@ -679,7 +969,7 @@ export default function App() {
         </main>
       </div>
 
-      {/* Mobile Bottom Navigation (Compact 58px height) */}
+      {/* Mobile Bottom Navigation (Compact 56px height) */}
       <nav
         aria-label="Điều hướng di động"
         className="fixed inset-x-0 bottom-0 z-30 grid h-14 grid-cols-4 border-t border-slate-200 bg-white lg:hidden no-print"

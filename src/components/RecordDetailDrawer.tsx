@@ -7,6 +7,7 @@ import {
   SpreadsheetConfig,
 } from '../types/pallet';
 import { ConfirmDialog } from './ConfirmDialog';
+import { DefectTypeSelector } from './DefectTypeSelector';
 import { DrivePhoto } from './DrivePhoto';
 
 interface RecordDetailDrawerProps {
@@ -35,6 +36,7 @@ export const RecordDetailDrawer: React.FC<RecordDetailDrawerProps> = ({
 }) => {
   const [status, setStatus] = useState<RepairStatus>('Chờ xử lý');
   const [severity, setSeverity] = useState<DamageSeverity>('Nhẹ');
+  const [defectTypes, setDefectTypes] = useState<string[]>([]);
   const [notes, setNotes] = useState('');
   const [showSaveConfirm, setShowSaveConfirm] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
@@ -46,6 +48,7 @@ export const RecordDetailDrawer: React.FC<RecordDetailDrawerProps> = ({
     if (record) {
       setStatus(record.status);
       setSeverity(record.severity);
+      setDefectTypes(record.defectTypes);
       setNotes(record.notes);
       setError(null);
     }
@@ -64,9 +67,13 @@ export const RecordDetailDrawer: React.FC<RecordDetailDrawerProps> = ({
 
   if (!record) return null;
 
+  const defectsChanged =
+    defectTypes.join(', ') !== record.defectTypes.join(', ');
+
   const isDirty =
     status !== record.status ||
     severity !== record.severity ||
+    defectsChanged ||
     notes.trim() !== record.notes.trim();
 
   const handleConfirmUpdate = async () => {
@@ -77,6 +84,7 @@ export const RecordDetailDrawer: React.FC<RecordDetailDrawerProps> = ({
         ...record,
         status,
         severity,
+        defectTypes,
         notes: notes.trim(),
       });
       setShowSaveConfirm(false);
@@ -154,7 +162,7 @@ export const RecordDetailDrawer: React.FC<RecordDetailDrawerProps> = ({
                 <span className="text-xs font-semibold text-slate-700">
                   Ảnh minh họa hiện trường
                 </span>
-                {record.imageUrl && (
+                {record.imageUrl && /^https?:\/\//i.test(record.imageUrl) && (
                   <a
                     href={record.imageUrl}
                     target="_blank"
@@ -268,6 +276,13 @@ export const RecordDetailDrawer: React.FC<RecordDetailDrawerProps> = ({
                 </select>
               </div>
 
+              <DefectTypeSelector
+                selectedDefects={defectTypes}
+                onChange={setDefectTypes}
+                label="Cập nhật loại hư hỏng"
+                inputId="drawer-custom-defect-input"
+              />
+
               <div>
                 <label
                   htmlFor="drawer-notes"
@@ -318,6 +333,10 @@ export const RecordDetailDrawer: React.FC<RecordDetailDrawerProps> = ({
         details={[
           { label: 'Số Series Pallet', value: record.serialNumber },
           { label: 'Mức độ hư hỏng', value: `${record.severity} → ${severity}` },
+          {
+            label: 'Loại hư hỏng',
+            value: defectTypes.length > 0 ? defectTypes.join(', ') : 'Không chọn',
+          },
           { label: 'Trạng thái xử lý', value: `${record.status} → ${status}` },
         ]}
         confirmLabel="Xác nhận cập nhật"

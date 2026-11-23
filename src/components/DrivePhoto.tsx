@@ -1,6 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { ImageOff, Loader2 } from 'lucide-react';
-import { fetchDriveImageBlobUrl } from '../services/googleWorkspace';
+import {
+  extractDriveFileIdFromUrl,
+  fetchDriveImageBlobUrl,
+} from '../services/googleWorkspace';
 
 interface DrivePhotoProps {
   accessToken: string | null;
@@ -23,13 +26,15 @@ export const DrivePhoto: React.FC<DrivePhotoProps> = ({
   const [loading, setLoading] = useState(false);
   const [failed, setFailed] = useState(false);
 
+  const resolvedFileId = driveFileId || extractDriveFileIdFromUrl(imageUrl) || '';
+
   useEffect(() => {
     let active = true;
     setFailed(false);
 
-    if (driveFileId && accessToken) {
+    if (resolvedFileId && accessToken) {
       setLoading(true);
-      fetchDriveImageBlobUrl(accessToken, driveFileId).then((blobUrl) => {
+      fetchDriveImageBlobUrl(accessToken, resolvedFileId).then((blobUrl) => {
         if (!active) return;
         setLoading(false);
         if (blobUrl) {
@@ -50,7 +55,7 @@ export const DrivePhoto: React.FC<DrivePhotoProps> = ({
     return () => {
       active = false;
     };
-  }, [accessToken, driveFileId, imageUrl]);
+  }, [accessToken, resolvedFileId, imageUrl]);
 
   if (loading) {
     return (

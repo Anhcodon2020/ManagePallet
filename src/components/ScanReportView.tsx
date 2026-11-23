@@ -10,7 +10,6 @@ import {
 } from 'lucide-react';
 import {
   DamageSeverity,
-  DEFECT_PRESETS,
   NewPalletReportInput,
   PalletRecord,
   PalletSource,
@@ -18,6 +17,7 @@ import {
   TransactionType,
 } from '../types/pallet';
 import { ConfirmDialog } from './ConfirmDialog';
+import { DefectTypeSelector } from './DefectTypeSelector';
 import { QRScannerPanel } from './QRScannerPanel';
 
 interface ScanReportViewProps {
@@ -57,11 +57,14 @@ export const ScanReportView: React.FC<ScanReportViewProps> = ({
     return records.filter((r) => r.serialNumber.toUpperCase() === clean);
   }, [records, serialNumber]);
 
-  const toggleDefect = (defect: string) => {
-    setDefectTypes((prev) =>
-      prev.includes(defect) ? prev.filter((d) => d !== defect) : [...prev, defect]
-    );
-  };
+  // Gather unique defect types previously used in Google Sheets for quick reuse
+  const historicalDefects = useMemo(() => {
+    const list: string[] = [];
+    records.forEach((r) => {
+      r.defectTypes.forEach((d) => list.push(d));
+    });
+    return list;
+  }, [records]);
 
   const handlePhotoSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -319,37 +322,13 @@ export const ScanReportView: React.FC<ScanReportViewProps> = ({
               </div>
             </div>
 
-            {/* Defect Type Multi-select Buttons */}
-            <div>
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold text-slate-700">
-                  Phân loại lỗi hư hỏng cụ thể
-                </span>
-                <span className="text-xs text-slate-500 tabular-nums">
-                  Đã chọn: {defectTypes.length}
-                </span>
-              </div>
-              <div className="mt-2 flex flex-wrap gap-2">
-                {DEFECT_PRESETS.map((defect) => {
-                  const selected = defectTypes.includes(defect);
-                  return (
-                    <button
-                      key={defect}
-                      type="button"
-                      onClick={() => toggleDefect(defect)}
-                      className={`inline-flex min-h-[36px] items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors whitespace-nowrap ${
-                        selected
-                          ? 'border-slate-900 bg-slate-900 text-white'
-                          : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50'
-                      }`}
-                    >
-                      {selected && <Check className="h-3.5 w-3.5 shrink-0" />}
-                      <span>{defect}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
+            {/* Defect Type Selector with Custom Input */}
+            <DefectTypeSelector
+              selectedDefects={defectTypes}
+              onChange={setDefectTypes}
+              historicalDefects={historicalDefects}
+              inputId="scan-custom-defect-input"
+            />
 
             {/* Detailed Notes */}
             <div>
@@ -478,8 +457,10 @@ export const ScanReportView: React.FC<ScanReportViewProps> = ({
       <ConfirmDialog
         open={showConfirm}
         title="Xác nhận ghi nhận báo cáo pallet hư hỏng"
-        description={`Dữ liệu sẽ được thêm vào trang tính "${sheetConfig.sheetName}" của bảng tính "${sheetConfig.title}"${
-          photoFile ? ' và tải ảnh minh họa lên thư mục Google Drive.' : '.'
+        description={`Dữ liệu sẽ được thêm vào trang tính "${sheetConfig.sheetName}" của bảng tính dùng chung "${sheetConfig.title}"${
+          photoFile
+            ? ' và tải ảnh minh họa lên Google Drive (bật quyền xem qua liên kết để mọi thành viên trong nhóm đều xem được).'
+            : '.'
         }`}
         details={[
           { label: 'Số Series Pallet', value: serialNumber.trim().toUpperCase() },

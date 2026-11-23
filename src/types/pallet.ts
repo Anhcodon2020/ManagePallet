@@ -10,11 +10,10 @@ export const DEFECT_PRESETS: readonly string[] = [
   'Nứt chân pallet',
   'Gãy nan gỗ',
   'Mất thanh đỡ',
-  'Lỏng đinh / Bung vít',
   'Sứt mẻ góc',
   'Cong vênh mặt sàn',
-  'Gãy khối gù đỡ',
-  'Ẩm mốc / Mối mọt',
+   'Ẩm mốc / Mối mọt',
+   'Bụi,bẩn'
 ] as const;
 
 export const SHEET_HEADERS = [
@@ -69,6 +68,7 @@ export interface SpreadsheetConfig {
   sheetName: string;
   sheetId: number;
   url: string;
+  configuredBy?: string;
 }
 
 export interface DriveSpreadsheetItem {

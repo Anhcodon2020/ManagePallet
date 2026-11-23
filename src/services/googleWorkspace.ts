@@ -23,14 +23,20 @@ export class WorkspaceAuthError extends Error {
   }
 }
 
+export class WorkspacePermissionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'WorkspacePermissionError';
+  }
+}
+
 async function handleApiResponse<T>(res: Response): Promise<T> {
-  if (res.status === 401 || res.status === 403) {
-    const body = await res.text().catch(() => '');
-    if (res.status === 401) {
-      throw new WorkspaceAuthError('Phiên đăng nhập Google đã hết hạn. Vui lòng đăng nhập lại.');
-    }
-    throw new Error(
-      `Không có quyền truy cập Google Workspace (${res.status}). ${body ? body.slice(0, 180) : ''}`
+  if (res.status === 401) {
+    throw new WorkspaceAuthError('Phiên đăng nhập Google đã hết hạn. Vui lòng đăng nhập lại.');
+  }
+  if (res.status === 403 || res.status === 404) {
+    throw new WorkspacePermissionError(
+      'Tài khoản Google này chưa được cấp quyền chỉnh sửa bảng tính dùng chung. Hãy nhờ quản trị viên chia sẻ quyền "Người chỉnh sửa" (Editor) trên Google Sheet.'
     );
   }
   if (!res.ok) {
@@ -41,6 +47,54 @@ async function handleApiResponse<T>(res: Response): Promise<T> {
     return {} as T;
   }
   return res.json() as Promise<T>;
+}
+
+export async function fetchSharedSheetConfig(): Promise<{
+  config: SpreadsheetConfig | null;
+  adminEmail: string;
+}> {
+  const res = await fetch('/api/shared-config');
+  if (!res.ok) {
+    return { config: null, adminEmail: '' };
+  }
+  return res.json() as Promise<{
+    config: SpreadsheetConfig | null;
+    adminEmail: string;
+  }>;
+}
+
+export async function saveSharedSheetConfig(
+  accessToken: string,
+  config: SpreadsheetConfig
+): Promise<{ config: SpreadsheetConfig; adminEmail: string }> {
+  const res = await fetch('/api/shared-config', {
+    method: 'PUT',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(config),
+  });
+  const data = (await res.json().catch(() => ({}))) as {
+    config?: SpreadsheetConfig;
+    adminEmail?: string;
+    error?: string;
+  };
+  if (!res.ok || !data.config) {
+    throw new Error(
+      data.error || 'Không thể lưu cấu hình Google Sheet dùng chung lên máy chủ.'
+    );
+  }
+  return {
+    config: data.config,
+    adminEmail: data.adminEmail || '',
+  };
+}
+
+export function extractDriveFileIdFromUrl(url: string | undefined): string | null {
+  if (!url) return null;
+  const match = url.match(/\/file\/d\/([a-zA-Z0-9-_]+)/) || url.match(/[?&]id=([a-zA-Z0-9-_]+)/);
+  return match ? match[1] : null;
 }
 
 export function extractSpreadsheetId(input: string): string | null {
@@ -540,6 +594,23 @@ export async function uploadDamagePhotoToDrive(
     }
   );
   const data = await handleApiResponse<{ id: string; webViewLink?: string }>(res);
+
+  // Grant link-level read permission on this newly uploaded damage photo so
+  // all teammates and the database admin can view the evidence from their own accounts.
+  await fetch(`${DRIVE_API}/${data.id}/permissions`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      role: 'reader',
+      type: 'anyone',
+    }),
+  }).catch(() => {
+    // Non-fatal if organization Drive policy restricts public links
+  });
+
   return {
     fileId: data.id,
     webViewLink:
