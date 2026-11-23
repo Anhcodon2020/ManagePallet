@@ -9,13 +9,14 @@ import {
   YAxis,
 } from 'recharts';
 import { ArrowRight, QrCode } from 'lucide-react';
-import { PalletRecord } from '../types/pallet';
+import { AuthMode, PalletRecord } from '../types/pallet';
 import { DrivePhoto } from './DrivePhoto';
 
 interface DashboardViewProps {
   records: PalletRecord[];
   loading: boolean;
   accessToken: string | null;
+  authMode: AuthMode;
   onNavigateScan: () => void;
   onNavigateRecords: () => void;
   onSelectRecord: (record: PalletRecord) => void;
@@ -25,6 +26,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   records,
   loading,
   accessToken,
+  authMode,
   onNavigateScan,
   onNavigateRecords,
   onSelectRecord,
@@ -330,6 +332,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               <div className="h-12 w-16 shrink-0 overflow-hidden rounded-md border border-slate-200 bg-slate-100">
                 <DrivePhoto
                   accessToken={accessToken}
+                  authMode={authMode}
                   driveFileId={rec.driveFileId}
                   imageUrl={rec.imageUrl}
                   alt={`Pallet ${rec.serialNumber}`}

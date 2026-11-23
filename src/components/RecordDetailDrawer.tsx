@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { ExternalLink, Save, Trash2, X } from 'lucide-react';
 import {
+  AuthMode,
   DamageSeverity,
   PalletRecord,
   RepairStatus,
@@ -13,6 +14,7 @@ import { DrivePhoto } from './DrivePhoto';
 interface RecordDetailDrawerProps {
   record: PalletRecord | null;
   accessToken: string | null;
+  authMode: AuthMode;
   sheetConfig: SpreadsheetConfig;
   onClose: () => void;
   onUpdateRecord: (updated: PalletRecord) => Promise<void>;
@@ -29,6 +31,7 @@ const STATUS_OPTIONS: RepairStatus[] = [
 export const RecordDetailDrawer: React.FC<RecordDetailDrawerProps> = ({
   record,
   accessToken,
+  authMode,
   sheetConfig,
   onClose,
   onUpdateRecord,
@@ -177,6 +180,7 @@ export const RecordDetailDrawer: React.FC<RecordDetailDrawerProps> = ({
               <div className="mt-2 aspect-4/3 w-full overflow-hidden rounded-lg border border-slate-200 bg-slate-100">
                 <DrivePhoto
                   accessToken={accessToken}
+                  authMode={authMode}
                   driveFileId={record.driveFileId}
                   imageUrl={record.imageUrl}
                   alt={`Tình trạng hư hỏng của pallet ${record.serialNumber}`}

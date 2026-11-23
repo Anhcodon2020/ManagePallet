@@ -5,8 +5,11 @@ import {
   fetchDriveImageBlobUrl,
 } from '../services/googleWorkspace';
 
+import { AuthMode } from '../types/pallet';
+
 interface DrivePhotoProps {
   accessToken: string | null;
+  authMode?: AuthMode;
   driveFileId?: string;
   imageUrl?: string;
   alt: string;
@@ -16,6 +19,7 @@ interface DrivePhotoProps {
 
 export const DrivePhoto: React.FC<DrivePhotoProps> = ({
   accessToken,
+  authMode = 'google',
   driveFileId,
   imageUrl,
   alt,
@@ -34,7 +38,7 @@ export const DrivePhoto: React.FC<DrivePhotoProps> = ({
 
     if (resolvedFileId && accessToken) {
       setLoading(true);
-      fetchDriveImageBlobUrl(accessToken, resolvedFileId).then((blobUrl) => {
+      fetchDriveImageBlobUrl(accessToken, resolvedFileId, authMode).then((blobUrl) => {
         if (!active) return;
         setLoading(false);
         if (blobUrl) {
@@ -55,7 +59,7 @@ export const DrivePhoto: React.FC<DrivePhotoProps> = ({
     return () => {
       active = false;
     };
-  }, [accessToken, resolvedFileId, imageUrl]);
+  }, [accessToken, authMode, resolvedFileId, imageUrl]);
 
   if (loading) {
     return (

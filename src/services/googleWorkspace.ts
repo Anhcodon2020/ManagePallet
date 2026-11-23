@@ -1,4 +1,6 @@
 import {
+  AdminStaffSettings,
+  AuthMode,
   DamageSeverity,
   DriveSpreadsheetItem,
   PalletRecord,
@@ -7,6 +9,7 @@ import {
   SHEET_HEADERS,
   SheetTabInfo,
   SpreadsheetConfig,
+  StaffAccessPublicStatus,
   TransactionType,
 } from '../types/pallet';
 
@@ -52,15 +55,116 @@ async function handleApiResponse<T>(res: Response): Promise<T> {
 export async function fetchSharedSheetConfig(): Promise<{
   config: SpreadsheetConfig | null;
   adminEmail: string;
+  staffAccess: StaffAccessPublicStatus;
 }> {
+  const defaultStaff: StaffAccessPublicStatus = {
+    enabled: false,
+    hasPasscode: false,
+    relayActive: false,
+    restrictedToAllowlist: false,
+  };
   const res = await fetch('/api/shared-config');
   if (!res.ok) {
-    return { config: null, adminEmail: '' };
+    return { config: null, adminEmail: '', staffAccess: defaultStaff };
   }
-  return res.json() as Promise<{
+  const data = (await res.json()) as {
     config: SpreadsheetConfig | null;
     adminEmail: string;
-  }>;
+    staffAccess?: StaffAccessPublicStatus;
+  };
+  return {
+    config: data.config ?? null,
+    adminEmail: data.adminEmail ?? '',
+    staffAccess: data.staffAccess ?? defaultStaff,
+  };
+}
+
+export async function fetchAdminStaffSettings(
+  googleAccessToken: string
+): Promise<AdminStaffSettings> {
+  const res = await fetch('/api/staff/admin-settings', {
+    headers: { Authorization: `Bearer ${googleAccessToken}` },
+  });
+  const data = (await res.json().catch(() => ({}))) as AdminStaffSettings & {
+    error?: string;
+  };
+  if (!res.ok) {
+    throw new Error(data.error || 'Không thể tải cấu hình đăng nhập nhân viên.');
+  }
+  return data;
+}
+
+export async function saveAdminStaffSettings(
+  googleAccessToken: string,
+  payload: {
+    enabled: boolean;
+    newPasscode?: string;
+    allowedEmails: string[];
+  }
+): Promise<AdminStaffSettings> {
+  const res = await fetch('/api/staff/admin-settings', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${googleAccessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+  const data = (await res.json().catch(() => ({}))) as AdminStaffSettings & {
+    error?: string;
+  };
+  if (!res.ok) {
+    throw new Error(data.error || 'Không thể lưu cấu hình đăng nhập cho Gmail khác.');
+  }
+  return data;
+}
+
+export async function sendAdminRelayHeartbeat(
+  googleAccessToken: string
+): Promise<void> {
+  await fetch('/api/staff/relay-heartbeat', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${googleAccessToken}` },
+  }).catch(() => {});
+}
+
+export async function clearAdminRelaySession(
+  googleAccessToken: string
+): Promise<void> {
+  await fetch('/api/staff/relay-clear', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${googleAccessToken}` },
+  }).catch(() => {});
+}
+
+export async function staffLogin(payload: {
+  email: string;
+  displayName: string;
+  accessCode: string;
+}): Promise<{
+  sessionToken: string;
+  user: { email: string; displayName: string };
+  config: SpreadsheetConfig;
+}> {
+  const res = await fetch('/api/staff/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = (await res.json().catch(() => ({}))) as {
+    sessionToken?: string;
+    user?: { email: string; displayName: string };
+    config?: SpreadsheetConfig;
+    error?: string;
+  };
+  if (!res.ok || !data.sessionToken || !data.user || !data.config) {
+    throw new Error(data.error || 'Đăng nhập bằng Gmail khác thất bại.');
+  }
+  return {
+    sessionToken: data.sessionToken,
+    user: data.user,
+    config: data.config,
+  };
 }
 
 export async function saveSharedSheetConfig(
@@ -327,18 +431,7 @@ function normalizeStatus(val: string | undefined): RepairStatus {
   return 'Chờ xử lý';
 }
 
-export async function fetchPalletRecords(
-  accessToken: string,
-  spreadsheetId: string,
-  sheetName: string
-): Promise<PalletRecord[]> {
-  const range = encodeURIComponent(`${quoteSheetName(sheetName)}!A2:L2000`);
-  const res = await fetch(`${SHEETS_API}/${spreadsheetId}/values/${range}`, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
-  const data = await handleApiResponse<{ values?: string[][] }>(res);
-  const rows = data.values ?? [];
-
+function parseSheetRowsToRecords(rows: string[][]): PalletRecord[] {
   const records: PalletRecord[] = [];
   rows.forEach((row, idx) => {
     const id = (row[0] ?? '').trim();
@@ -372,6 +465,131 @@ export async function fetchPalletRecords(
 
   // Return newest first
   return records.reverse();
+}
+
+export async function fetchPalletRecords(
+  accessToken: string,
+  spreadsheetId: string,
+  sheetName: string
+): Promise<PalletRecord[]> {
+  const range = encodeURIComponent(`${quoteSheetName(sheetName)}!A2:L2000`);
+  const res = await fetch(`${SHEETS_API}/${spreadsheetId}/values/${range}`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  const data = await handleApiResponse<{ values?: string[][] }>(res);
+  return parseSheetRowsToRecords(data.values ?? []);
+}
+
+export async function staffFetchPalletRecords(
+  staffToken: string
+): Promise<PalletRecord[]> {
+  const res = await fetch('/api/staff/records', {
+    headers: { Authorization: `Bearer ${staffToken}` },
+  });
+  if (res.status === 401) {
+    throw new WorkspaceAuthError(
+      'Phiên đăng nhập nhân viên đã hết hạn. Vui lòng đăng nhập lại.'
+    );
+  }
+  const data = (await res.json().catch(() => ({}))) as {
+    values?: string[][];
+    error?: string;
+  };
+  if (!res.ok) {
+    throw new Error(data.error || 'Không thể tải dữ liệu từ Google Sheet chung.');
+  }
+  return parseSheetRowsToRecords(data.values ?? []);
+}
+
+export async function staffAppendPalletRecord(
+  staffToken: string,
+  record: Omit<PalletRecord, 'rowIndex'>
+): Promise<void> {
+  const rowValues = [
+    record.id,
+    record.timestamp,
+    record.serialNumber,
+    record.transactionType,
+    record.source,
+    record.severity,
+    record.defectTypes.join(', '),
+    record.notes,
+    record.imageUrl,
+    record.driveFileId,
+    record.status,
+    record.reporter,
+  ];
+  const res = await fetch('/api/staff/records', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${staffToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ rowValues }),
+  });
+  if (res.status === 401) {
+    throw new WorkspaceAuthError('Phiên đăng nhập nhân viên đã hết hạn.');
+  }
+  if (!res.ok) {
+    const data = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(data.error || 'Không thể lưu báo cáo vào Google Sheet chung.');
+  }
+}
+
+export async function staffUpdatePalletRecord(
+  staffToken: string,
+  record: PalletRecord
+): Promise<void> {
+  const rowValues = [
+    record.id,
+    record.timestamp,
+    record.serialNumber,
+    record.transactionType,
+    record.source,
+    record.severity,
+    record.defectTypes.join(', '),
+    record.notes,
+    record.imageUrl,
+    record.driveFileId,
+    record.status,
+    record.reporter,
+  ];
+  const res = await fetch('/api/staff/records', {
+    method: 'PUT',
+    headers: {
+      Authorization: `Bearer ${staffToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ rowIndex: record.rowIndex, rowValues }),
+  });
+  if (res.status === 401) {
+    throw new WorkspaceAuthError('Phiên đăng nhập nhân viên đã hết hạn.');
+  }
+  if (!res.ok) {
+    const data = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(data.error || 'Không thể cập nhật dữ liệu trên Google Sheet chung.');
+  }
+}
+
+export async function staffDeletePalletRecord(
+  staffToken: string,
+  rowIndex: number,
+  driveFileId?: string
+): Promise<void> {
+  const qs = driveFileId
+    ? `?driveFileId=${encodeURIComponent(driveFileId)}`
+    : '';
+  const res = await fetch(`/api/staff/records/${rowIndex}${qs}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${staffToken}` },
+  });
+  if (res.status === 401) {
+    throw new WorkspaceAuthError('Phiên đăng nhập nhân viên đã hết hạn.');
+  }
+  if (!res.ok) {
+    const data = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(data.error || 'Không thể xóa bản ghi trên Google Sheet chung.');
+  }
 }
 
 export async function appendPalletRecord(
@@ -618,39 +836,92 @@ export async function uploadDamagePhotoToDrive(
   };
 }
 
-// In-memory cache of Drive image blob URLs so thumbnails render instantly without public sharing
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const result = typeof reader.result === 'string' ? reader.result : '';
+      const commaIdx = result.indexOf(',');
+      resolve(commaIdx >= 0 ? result.slice(commaIdx + 1) : result);
+    };
+    reader.onerror = () => reject(new Error('Không thể đọc dữ liệu ảnh.'));
+    reader.readAsDataURL(blob);
+  });
+}
+
+export async function staffUploadDamagePhoto(
+  staffToken: string,
+  file: File,
+  serialNumber: string
+): Promise<{ fileId: string; webViewLink: string }> {
+  const compressedBlob = await compressImageFile(file);
+  const base64Data = await blobToBase64(compressedBlob);
+
+  const res = await fetch('/api/staff/upload-photo', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${staffToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      base64Data,
+      mimeType: compressedBlob.type || 'image/jpeg',
+      serialNumber,
+    }),
+  });
+  if (res.status === 401) {
+    throw new WorkspaceAuthError('Phiên đăng nhập nhân viên đã hết hạn.');
+  }
+  const data = (await res.json().catch(() => ({}))) as {
+    fileId?: string;
+    webViewLink?: string;
+    error?: string;
+  };
+  if (!res.ok || !data.fileId || !data.webViewLink) {
+    throw new Error(data.error || 'Tải ảnh lên Google Drive thất bại.');
+  }
+  return { fileId: data.fileId, webViewLink: data.webViewLink };
+}
+
+// In-memory cache of Drive image blob URLs so thumbnails render instantly
 const driveImageCache = new Map<string, string>();
 const driveImagePending = new Map<string, Promise<string | null>>();
 
 export async function fetchDriveImageBlobUrl(
   accessToken: string,
-  fileId: string
+  fileId: string,
+  authMode: AuthMode = 'google'
 ): Promise<string | null> {
   if (!fileId) return null;
-  if (driveImageCache.has(fileId)) {
-    return driveImageCache.get(fileId)!;
+  const cacheKey = `${authMode}:${fileId}`;
+  if (driveImageCache.has(cacheKey)) {
+    return driveImageCache.get(cacheKey)!;
   }
-  if (driveImagePending.has(fileId)) {
-    return driveImagePending.get(fileId)!;
+  if (driveImagePending.has(cacheKey)) {
+    return driveImagePending.get(cacheKey)!;
   }
 
   const promise = (async () => {
     try {
-      const res = await fetch(`${DRIVE_API}/${fileId}?alt=media`, {
+      const endpoint =
+        authMode === 'staff'
+          ? `/api/staff/photo/${encodeURIComponent(fileId)}`
+          : `${DRIVE_API}/${encodeURIComponent(fileId)}?alt=media`;
+      const res = await fetch(endpoint, {
         headers: { Authorization: `Bearer ${accessToken}` },
       });
       if (!res.ok) return null;
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
-      driveImageCache.set(fileId, url);
+      driveImageCache.set(cacheKey, url);
       return url;
     } catch {
       return null;
     } finally {
-      driveImagePending.delete(fileId);
+      driveImagePending.delete(cacheKey);
     }
   })();
 
-  driveImagePending.set(fileId, promise);
+  driveImagePending.set(cacheKey, promise);
   return promise;
 }

@@ -79,3 +79,20 @@ export interface DriveSpreadsheetItem {
 }
 
 export type ActiveView = 'dashboard' | 'scan' | 'records' | 'settings';
+
+export type AuthMode = 'google' | 'staff';
+
+export interface StaffAccessPublicStatus {
+  enabled: boolean;
+  hasPasscode: boolean;
+  relayActive: boolean;
+  restrictedToAllowlist: boolean;
+}
+
+export interface AdminStaffSettings {
+  enabled: boolean;
+  hasPasscode: boolean;
+  usingEnvPasscode: boolean;
+  relayActive: boolean;
+  allowedEmails: string[];
+}

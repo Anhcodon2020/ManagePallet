@@ -18,6 +18,7 @@ const auth = getAuth(app);
 
 const provider = new GoogleAuthProvider();
 WORKSPACE_SCOPES.forEach((scope) => provider.addScope(scope));
+provider.setCustomParameters({ prompt: 'select_account' });
 
 let isSigningIn = false;
 // Keep OAuth access token strictly in memory (never in localStorage/sessionStorage).

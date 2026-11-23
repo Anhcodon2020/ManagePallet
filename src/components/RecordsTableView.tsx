@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { Download, Search } from 'lucide-react';
 import {
+  AuthMode,
   DamageSeverity,
   PalletRecord,
   PalletSource,
@@ -14,6 +15,7 @@ interface RecordsTableViewProps {
   records: PalletRecord[];
   loading: boolean;
   accessToken: string | null;
+  authMode: AuthMode;
   onSelectRecord: (record: PalletRecord) => void;
 }
 
@@ -21,6 +23,7 @@ export const RecordsTableView: React.FC<RecordsTableViewProps> = ({
   records,
   loading,
   accessToken,
+  authMode,
   onSelectRecord,
 }) => {
   const [search, setSearch] = useState('');
@@ -252,6 +255,7 @@ export const RecordsTableView: React.FC<RecordsTableViewProps> = ({
                       <div className="h-10 w-12 overflow-hidden rounded border border-slate-200 bg-slate-100">
                         <DrivePhoto
                           accessToken={accessToken}
+                          authMode={authMode}
                           driveFileId={rec.driveFileId}
                           imageUrl={rec.imageUrl}
                           alt={`Pallet ${rec.serialNumber}`}
