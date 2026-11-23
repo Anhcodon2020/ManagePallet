@@ -1,0 +1,6 @@
+{
+  "name": "PalletGuard — Quản Lý Pallet Hư Hỏng",
+  "description": "Ứng dụng quản lý pallet hư hỏng theo thời gian thực với tính năng quét mã QR, chụp ảnh minh họa và đồng bộ trực tiếp Google Sheets & Google Drive.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
