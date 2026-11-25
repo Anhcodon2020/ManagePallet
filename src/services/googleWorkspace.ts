@@ -57,26 +57,64 @@ export async function fetchSharedSheetConfig(): Promise<{
   adminEmail: string;
   staffAccess: StaffAccessPublicStatus;
 }> {
+  const envAdmin = (import.meta.env.VITE_ADMIN_EMAIL || '').trim().toLowerCase();
+  const envSheetId = extractSpreadsheetId(
+    import.meta.env.VITE_DEFAULT_SPREADSHEET_ID || ''
+  );
+  const envSheetName = (import.meta.env.VITE_DEFAULT_SHEET_NAME || '').trim();
+
+  const envFallbackConfig: SpreadsheetConfig | null = envSheetId
+    ? {
+        spreadsheetId: envSheetId,
+        title: 'Google Sheet dùng chung',
+        sheetName: envSheetName,
+        sheetId: 0,
+        url: `https://docs.google.com/spreadsheets/d/${envSheetId}/edit`,
+        configuredBy: envAdmin || undefined,
+      }
+    : null;
+
   const defaultStaff: StaffAccessPublicStatus = {
     enabled: false,
     hasPasscode: false,
     relayActive: false,
     restrictedToAllowlist: false,
   };
-  const res = await fetch('/api/shared-config');
-  if (!res.ok) {
-    return { config: null, adminEmail: '', staffAccess: defaultStaff };
+
+  try {
+    const res = await fetch('/api/shared-config');
+    if (!res.ok) {
+      return {
+        config: envFallbackConfig,
+        adminEmail: envAdmin,
+        staffAccess: defaultStaff,
+      };
+    }
+    const contentType = res.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) {
+      return {
+        config: envFallbackConfig,
+        adminEmail: envAdmin,
+        staffAccess: defaultStaff,
+      };
+    }
+    const data = (await res.json()) as {
+      config: SpreadsheetConfig | null;
+      adminEmail: string;
+      staffAccess?: StaffAccessPublicStatus;
+    };
+    return {
+      config: data.config ?? envFallbackConfig,
+      adminEmail: data.adminEmail || envAdmin,
+      staffAccess: data.staffAccess ?? defaultStaff,
+    };
+  } catch {
+    return {
+      config: envFallbackConfig,
+      adminEmail: envAdmin,
+      staffAccess: defaultStaff,
+    };
   }
-  const data = (await res.json()) as {
-    config: SpreadsheetConfig | null;
-    adminEmail: string;
-    staffAccess?: StaffAccessPublicStatus;
-  };
-  return {
-    config: data.config ?? null,
-    adminEmail: data.adminEmail ?? '',
-    staffAccess: data.staffAccess ?? defaultStaff,
-  };
 }
 
 export async function fetchAdminStaffSettings(
@@ -171,28 +209,46 @@ export async function saveSharedSheetConfig(
   accessToken: string,
   config: SpreadsheetConfig
 ): Promise<{ config: SpreadsheetConfig; adminEmail: string }> {
-  const res = await fetch('/api/shared-config', {
-    method: 'PUT',
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(config),
-  });
-  const data = (await res.json().catch(() => ({}))) as {
-    config?: SpreadsheetConfig;
-    adminEmail?: string;
-    error?: string;
-  };
-  if (!res.ok || !data.config) {
-    throw new Error(
-      data.error || 'Không thể lưu cấu hình Google Sheet dùng chung lên máy chủ.'
-    );
+  try {
+    const res = await fetch('/api/shared-config', {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(config),
+    });
+    const contentType = res.headers.get('content-type') || '';
+    if (res.status === 404 || !contentType.includes('application/json')) {
+      // Static hosting (e.g. Vercel without Express backend): return local config gracefully
+      return {
+        config,
+        adminEmail: (import.meta.env.VITE_ADMIN_EMAIL || '').trim(),
+      };
+    }
+    const data = (await res.json().catch(() => ({}))) as {
+      config?: SpreadsheetConfig;
+      adminEmail?: string;
+      error?: string;
+    };
+    if (!res.ok || !data.config) {
+      throw new Error(
+        data.error || 'Không thể lưu cấu hình Google Sheet dùng chung lên máy chủ.'
+      );
+    }
+    return {
+      config: data.config,
+      adminEmail: data.adminEmail || '',
+    };
+  } catch (err) {
+    if (err instanceof TypeError) {
+      return {
+        config,
+        adminEmail: (import.meta.env.VITE_ADMIN_EMAIL || '').trim(),
+      };
+    }
+    throw err;
   }
-  return {
-    config: data.config,
-    adminEmail: data.adminEmail || '',
-  };
 }
 
 export function extractDriveFileIdFromUrl(url: string | undefined): string | null {
