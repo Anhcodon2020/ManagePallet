@@ -6,6 +6,7 @@ import {
   ExternalLink,
   FileSpreadsheet,
   KeyRound,
+  Link2,
   Loader2,
   Printer,
   Share2,
@@ -46,6 +47,8 @@ export const SettingsAndQRView: React.FC<SettingsAndQRViewProps> = ({
   const [startNum, setStartNum] = useState(101);
   const [count, setCount] = useState(6);
   const [copiedLink, setCopiedLink] = useState(false);
+  const [showChangeSheetPanel, setShowChangeSheetPanel] = useState(false);
+  const [sheetChangedNotice, setSheetChangedNotice] = useState<string | null>(null);
 
   // Admin Staff Gmail Login management state
   const [staffSettings, setStaffSettings] = useState<AdminStaffSettings | null>(null);
@@ -200,16 +203,60 @@ export const SettingsAndQRView: React.FC<SettingsAndQRViewProps> = ({
             </div>
           </div>
 
-          <a
-            href={sheetConfig.url}
-            target="_blank"
-            rel="noreferrer"
-            className="inline-flex min-h-[38px] items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-50 whitespace-nowrap shrink-0"
-          >
-            <span>Mở trên Google Sheets</span>
-            <ExternalLink className="h-3.5 w-3.5" />
-          </a>
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            {isAdmin && (
+              <button
+                type="button"
+                onClick={() => setShowChangeSheetPanel((prev) => !prev)}
+                className="inline-flex min-h-[38px] items-center gap-1.5 rounded-lg bg-slate-900 px-3.5 py-2 text-xs font-semibold text-white transition-colors hover:bg-slate-800 whitespace-nowrap shrink-0"
+              >
+                <Link2 className="h-3.5 w-3.5" />
+                <span>
+                  {showChangeSheetPanel
+                    ? 'Đóng đổi đường dẫn'
+                    : 'Đổi đường dẫn Google Sheet'}
+                </span>
+              </button>
+            )}
+            <a
+              href={sheetConfig.url}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex min-h-[38px] items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-50 whitespace-nowrap shrink-0"
+            >
+              <span>Mở trên Google Sheets</span>
+              <ExternalLink className="h-3.5 w-3.5" />
+            </a>
+          </div>
         </div>
+
+        {sheetChangedNotice && (
+          <div className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 px-3.5 py-2.5 text-xs leading-relaxed text-emerald-800">
+            {sheetChangedNotice}
+          </div>
+        )}
+
+        {isAdmin && showChangeSheetPanel && (
+          <div className="mt-5 border-t border-slate-200 pt-5">
+            <SheetSetupView
+              accessToken={accessToken}
+              currentConfig={sheetConfig}
+              isAdmin={isAdmin}
+              adminEmail={adminEmail}
+              onSelectConfig={(nextCfg, savedToServer) => {
+                onSelectConfig(nextCfg, savedToServer);
+                setShowChangeSheetPanel(false);
+                setSheetChangedNotice(
+                  savedToServer
+                    ? `Đã cập nhật Database Google Sheet dùng chung sang "${nextCfg.title}" (Tab: ${nextCfg.sheetName}). Toàn bộ nhân viên sẽ đồng bộ vào bảng tính mới này.`
+                    : `Đã chuyển Database sang "${nextCfg.title}" (Tab: ${nextCfg.sheetName}). Hãy sao chép "Link dùng chung" hoặc mã QR bên dưới để gửi cho điện thoại nhân viên mở thẳng bảng tính mới.`
+                );
+              }}
+              onAuthError={onAuthError}
+              embedded
+            />
+          </div>
+        )}
 
         <div className="mt-5 flex flex-wrap items-center justify-between gap-4 border-t border-slate-100 pt-4">
           <div>
@@ -553,24 +600,6 @@ export const SettingsAndQRView: React.FC<SettingsAndQRViewProps> = ({
           ))}
         </div>
       </section>
-
-      {/* Admin-only option to switch the shared existing Google Sheet */}
-      {isAdmin && (
-        <div className="no-print">
-          <h2 className="mb-3 text-base font-semibold text-slate-900">
-            Đổi Google Sheet Database dùng chung (Chỉ dành cho quản trị viên)
-          </h2>
-          <SheetSetupView
-            accessToken={accessToken}
-            currentConfig={sheetConfig}
-            isAdmin={isAdmin}
-            adminEmail={adminEmail}
-            onSelectConfig={onSelectConfig}
-            onAuthError={onAuthError}
-            embedded
-          />
-        </div>
-      )}
     </div>
   );
 };

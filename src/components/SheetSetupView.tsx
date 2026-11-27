@@ -111,7 +111,7 @@ export const SheetSetupView: React.FC<SheetSetupViewProps> = ({
       if (isAdmin) {
         const saved = await saveSharedSheetConfig(accessToken, nextConfig);
         setShowConnectConfirm(false);
-        onSelectConfig(saved.config, true);
+        onSelectConfig(saved.config, saved.savedToServer);
       } else {
         setShowConnectConfirm(false);
         onSelectConfig(nextConfig, false);

@@ -175,6 +175,7 @@ export default function App() {
           config: serverConfig,
           adminEmail: serverAdmin,
           staffAccess,
+          source: configSource,
         } = await fetchSharedSheetConfig();
         if (serverAdmin) {
           setAdminEmail(serverAdmin);
@@ -238,7 +239,12 @@ export default function App() {
         }
 
         // Priority 2: Server-configured shared central Google Sheet
-        if (serverConfig) {
+        // On static hosting (source === 'env'), keep any Admin-updated localStorage config if present.
+        const savedLocal = loadSavedSheetConfig();
+        const shouldUseServerConfig =
+          Boolean(serverConfig) && (configSource === 'server' || !savedLocal);
+
+        if (serverConfig && shouldUseServerConfig) {
           if (!serverConfig.sheetName && activeToken) {
             try {
               const meta = await getSpreadsheetMetadata(
@@ -386,11 +392,23 @@ export default function App() {
     _isSharedGlobal: boolean
   ) => {
     setSheetConfig(config);
+    setRecords([]);
+    setSelectedRecord(null);
     setPermissionDenied(false);
     try {
       window.localStorage.setItem(SHEET_CONFIG_STORAGE_KEY, JSON.stringify(config));
     } catch {
       // Ignore storage quota errors
+    }
+    try {
+      const currentUrl = new URL(window.location.href);
+      if (currentUrl.searchParams.has('sheetId') || currentUrl.searchParams.has('tab')) {
+        currentUrl.searchParams.delete('sheetId');
+        currentUrl.searchParams.delete('tab');
+        window.history.replaceState({}, '', currentUrl.toString());
+      }
+    } catch {
+      // Ignore history API restrictions
     }
     setSyncError(null);
   };

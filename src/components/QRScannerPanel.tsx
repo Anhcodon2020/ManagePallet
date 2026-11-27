@@ -6,14 +6,18 @@ import {
   CameraOff,
   CheckCircle2,
   ImageUp,
+  Loader2,
   QrCode,
   RefreshCw,
+  ScanLine,
 } from 'lucide-react';
 
 interface QRScannerPanelProps {
   onScanned: (serialNumber: string) => void;
   lastScannedSerial: string;
 }
+
+type ScanTriggerMode = 'trigger' | 'auto';
 
 const SAMPLE_CODES = [
   { code: 'PLT-NM-2026-0412', desc: 'Pallet Nhà máy — Lô A' },
@@ -28,14 +32,46 @@ export const QRScannerPanel: React.FC<QRScannerPanelProps> = ({
   const scannerRef = useRef<Html5Qrcode | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [isScanning, setIsScanning] = useState(false);
+  const [startingCamera, setStartingCamera] = useState(false);
   const [cameras, setCameras] = useState<Array<{ id: string; label: string }>>([]);
   const [activeCameraIdx, setActiveCameraIdx] = useState(0);
+  const [scanMode, setScanMode] = useState<ScanTriggerMode>('trigger');
+  const [isArmed, setIsArmed] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
   const [scanNotice, setScanNotice] = useState<string | null>(null);
   const [showSampleQR, setShowSampleQR] = useState(false);
+
+  const scanModeRef = useRef<ScanTriggerMode>('trigger');
+  const isArmedRef = useRef<boolean>(false);
+  const armTimeoutRef = useRef<number | null>(null);
   const lastScanTimeRef = useRef<number>(0);
+  // Holds a very fresh decoded frame (< 500ms old) so pressing the Scan button captures instantly
+  const latestFrameRef = useRef<{ code: string; at: number } | null>(null);
+
+  useEffect(() => {
+    scanModeRef.current = scanMode;
+    if (scanMode === 'auto') {
+      isArmedRef.current = false;
+      setIsArmed(false);
+      if (armTimeoutRef.current) {
+        window.clearTimeout(armTimeoutRef.current);
+        armTimeoutRef.current = null;
+      }
+    }
+  }, [scanMode]);
+
+  const disarmTrigger = () => {
+    isArmedRef.current = false;
+    setIsArmed(false);
+    if (armTimeoutRef.current) {
+      window.clearTimeout(armTimeoutRef.current);
+      armTimeoutRef.current = null;
+    }
+  };
 
   const stopScanner = async () => {
+    disarmTrigger();
+    latestFrameRef.current = null;
     const instance = scannerRef.current;
     if (instance) {
       try {
@@ -55,49 +91,54 @@ export const QRScannerPanel: React.FC<QRScannerPanelProps> = ({
     return () => {
       void stopScanner();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const handleDecodeSuccess = (decodedText: string) => {
-    const now = Date.now();
-    if (now - lastScanTimeRef.current < 1500) return;
-    lastScanTimeRef.current = now;
-
-    const normalized = decodedText.trim().toUpperCase();
+  const commitScannedCode = (rawText: string) => {
+    const normalized = rawText.trim().toUpperCase();
     if (!normalized) return;
 
+    lastScanTimeRef.current = Date.now();
+    disarmTrigger();
     setScanError(null);
     setScanNotice(`Đã quét thành công mã: ${normalized}`);
+    if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+      try {
+        navigator.vibrate(80);
+      } catch {
+        // Ignore unsupported vibration environments
+      }
+    }
     onScanned(normalized);
   };
 
-  const startScanner = async (cameraIndexOverride?: number) => {
+  const handleDecodeFrame = (decodedText: string) => {
+    const normalized = decodedText.trim().toUpperCase();
+    if (!normalized) return;
+
+    const now = Date.now();
+    latestFrameRef.current = { code: normalized, at: now };
+
+    if (scanModeRef.current === 'trigger') {
+      // Only accept scan when user explicitly pressed the "Nhấn để quét" button
+      if (!isArmedRef.current) return;
+      commitScannedCode(normalized);
+      return;
+    }
+
+    // Continuous auto-scan mode with 1.5s debounce
+    if (now - lastScanTimeRef.current < 1500) return;
+    commitScannedCode(normalized);
+  };
+
+  const startScanner = async (cameraIndexOverride?: number): Promise<boolean> => {
     setScanError(null);
     setScanNotice(null);
+    setStartingCamera(true);
 
     try {
       await stopScanner();
 
-      const devices = await Html5Qrcode.getCameras();
-      if (!devices || devices.length === 0) {
-        setScanError(
-          'Không tìm thấy camera trên thiết bị. Bạn có thể chọn "Quét từ ảnh QR" hoặc nhập số series trực tiếp.'
-        );
-        return;
-      }
-
-      setCameras(devices);
-
-      // Prefer back/environment camera by default on first open
-      let targetIdx = cameraIndexOverride ?? activeCameraIdx;
-      if (cameraIndexOverride === undefined) {
-        const backIdx = devices.findIndex((d) =>
-          /back|rear|environment/i.test(d.label)
-        );
-        targetIdx = backIdx >= 0 ? backIdx : 0;
-        setActiveCameraIdx(targetIdx);
-      }
-
-      const cameraId = devices[targetIdx]?.id ?? devices[0].id;
       const html5Qr = new Html5Qrcode('pallet-qr-reader', {
         formatsToSupport: [
           Html5QrcodeSupportedFormats.QR_CODE,
@@ -109,20 +150,62 @@ export const QRScannerPanel: React.FC<QRScannerPanelProps> = ({
       });
       scannerRef.current = html5Qr;
 
-      await html5Qr.start(
-        cameraId,
-        {
-          fps: 10,
-          qrbox: { width: 220, height: 220 },
-          aspectRatio: 4 / 3,
-        },
-        handleDecodeSuccess,
-        () => {
-          // Ignore per-frame decode misses
+      const scanConfig = {
+        fps: 12,
+        qrbox: { width: 230, height: 230 },
+        aspectRatio: 4 / 3,
+      };
+
+      // When user explicitly switches camera, use exact cameraId;
+      // otherwise prefer rear smartphone camera directly via facingMode: 'environment'
+      if (cameraIndexOverride !== undefined && cameras[cameraIndexOverride]) {
+        await html5Qr.start(
+          cameras[cameraIndexOverride].id,
+          scanConfig,
+          handleDecodeFrame,
+          () => {}
+        );
+      } else {
+        try {
+          await html5Qr.start(
+            { facingMode: 'environment' },
+            scanConfig,
+            handleDecodeFrame,
+            () => {}
+          );
+        } catch {
+          const devices = await Html5Qrcode.getCameras();
+          if (!devices || devices.length === 0) {
+            throw new Error(
+              'Không tìm thấy camera trên thiết bị. Bạn có thể chọn "Quét từ ảnh" hoặc nhập số series thủ công.'
+            );
+          }
+          setCameras(devices);
+          const backIdx = devices.findIndex((d) =>
+            /back|rear|environment/i.test(d.label)
+          );
+          const targetIdx = backIdx >= 0 ? backIdx : 0;
+          setActiveCameraIdx(targetIdx);
+          await html5Qr.start(
+            devices[targetIdx].id,
+            scanConfig,
+            handleDecodeFrame,
+            () => {}
+          );
         }
-      );
+
+        // Populate camera list in background so user can switch lenses if needed
+        Html5Qrcode.getCameras()
+          .then((devices) => {
+            if (devices && devices.length > 0) {
+              setCameras(devices);
+            }
+          })
+          .catch(() => {});
+      }
 
       setIsScanning(true);
+      return true;
     } catch (err: unknown) {
       const msg =
         err instanceof Error
@@ -130,7 +213,57 @@ export const QRScannerPanel: React.FC<QRScannerPanelProps> = ({
           : 'Không thể khởi động camera. Hãy kiểm tra quyền truy cập camera của trình duyệt.';
       setScanError(msg);
       setIsScanning(false);
+      return false;
+    } finally {
+      setStartingCamera(false);
     }
+  };
+
+  const handlePressToScan = async () => {
+    setScanError(null);
+
+    // If camera is off, start it first and immediately arm capture
+    if (!isScanning) {
+      const started = await startScanner();
+      if (!started) return;
+      if (scanModeRef.current === 'trigger') {
+        armTriggerWindow();
+      }
+      return;
+    }
+
+    // If already armed, pressing again cancels waiting state
+    if (isArmedRef.current) {
+      disarmTrigger();
+      return;
+    }
+
+    // If camera already saw a crisp code in the viewfinder within the last 500ms, lock it immediately!
+    const fresh = latestFrameRef.current;
+    if (fresh && Date.now() - fresh.at < 500) {
+      commitScannedCode(fresh.code);
+      return;
+    }
+
+    armTriggerWindow();
+  };
+
+  const armTriggerWindow = () => {
+    setScanNotice(null);
+    isArmedRef.current = true;
+    setIsArmed(true);
+
+    if (armTimeoutRef.current) {
+      window.clearTimeout(armTimeoutRef.current);
+    }
+    armTimeoutRef.current = window.setTimeout(() => {
+      if (isArmedRef.current) {
+        disarmTrigger();
+        setScanError(
+          'Chưa nhận diện được mã trong khung ngắm. Đưa camera lại gần mã QR/Barcode hơn rồi nhấn nút Quét lại.'
+        );
+      }
+    }, 6000);
   };
 
   const handleSwitchCamera = async () => {
@@ -155,7 +288,7 @@ export const QRScannerPanel: React.FC<QRScannerPanelProps> = ({
       });
       const decoded = await fileScanner.scanFile(file, false);
       fileScanner.clear();
-      handleDecodeSuccess(decoded);
+      commitScannedCode(decoded);
     } catch {
       setScanError(
         'Không nhận diện được mã QR hoặc mã vạch trong hình ảnh đã chọn. Hãy chọn ảnh rõ nét hơn.'
@@ -169,13 +302,15 @@ export const QRScannerPanel: React.FC<QRScannerPanelProps> = ({
 
   return (
     <div className="flex h-full flex-col rounded-xl border border-slate-200 bg-white p-5">
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <h2 className="text-base font-semibold text-slate-900">
             Quét mã QR / Barcode Pallet
           </h2>
           <p className="mt-0.5 text-xs text-slate-500">
-            Hướng camera vào tem mã trên thân pallet để điền tự động số series.
+            {scanMode === 'trigger'
+              ? 'Ngắm đúng tem pallet rồi nhấn nút "Nhấn để quét mã" bên dưới.'
+              : 'Chế độ quét liên tục: tự động nhận mã ngay khi đưa vào khung.'}
           </p>
         </div>
         <button
@@ -184,17 +319,53 @@ export const QRScannerPanel: React.FC<QRScannerPanelProps> = ({
           className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 whitespace-nowrap shrink-0"
         >
           <QrCode className="h-3.5 w-3.5" />
-          <span>{showSampleQR ? 'Ẩn mã mẫu' : 'Mã QR thử nghiệm'}</span>
+          <span>{showSampleQR ? 'Ẩn mã mẫu' : 'Mã mẫu'}</span>
+        </button>
+      </div>
+
+      {/* Smartphone Scan Mode Switcher */}
+      <div className="mt-3 grid grid-cols-2 gap-1 rounded-lg bg-slate-100 p-1">
+        <button
+          type="button"
+          onClick={() => setScanMode('trigger')}
+          className={`min-h-[36px] rounded-md px-3 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap ${
+            scanMode === 'trigger'
+              ? 'bg-white text-slate-900 shadow-xs'
+              : 'text-slate-600 hover:text-slate-900'
+          }`}
+        >
+          Bấm nút mới quét
+        </button>
+        <button
+          type="button"
+          onClick={() => setScanMode('auto')}
+          className={`min-h-[36px] rounded-md px-3 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap ${
+            scanMode === 'auto'
+              ? 'bg-white text-slate-900 shadow-xs'
+              : 'text-slate-600 hover:text-slate-900'
+          }`}
+        >
+          Quét tự động
         </button>
       </div>
 
       {/* Camera Viewport */}
-      <div className="relative mt-4 overflow-hidden rounded-lg border border-slate-200 bg-slate-950 min-h-[260px] flex flex-col items-center justify-center">
+      <div className="relative mt-3.5 overflow-hidden rounded-lg border border-slate-200 bg-slate-950 min-h-[260px] flex flex-col items-center justify-center">
         <div
           id="pallet-qr-reader"
           className={`w-full ${isScanning ? 'block' : 'hidden'}`}
         />
         <div id="pallet-qr-file-temp" className="hidden" />
+
+        {isScanning && scanMode === 'trigger' && (
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 via-black/40 to-transparent px-4 pb-3 pt-8 text-center">
+            <p className="text-xs font-medium text-white">
+              {isArmed
+                ? 'Đang lấy nét & đọc mã QR / Barcode...'
+                : 'Đưa mã vào khung ngắm rồi nhấn nút Quét bên dưới'}
+            </p>
+          </div>
+        )}
 
         {!isScanning && (
           <div className="flex flex-col items-center justify-center px-6 py-10 text-center">
@@ -205,22 +376,63 @@ export const QRScannerPanel: React.FC<QRScannerPanelProps> = ({
               Camera quét mã đang tắt
             </p>
             <p className="mt-1 max-w-xs text-xs text-slate-400">
-              Hỗ trợ QR Code, Code 128, Code 39 và EAN-13 trên tem pallet nhà máy &amp; kho.
+              Hỗ trợ QR Code, Code 128, Code 39 và EAN-13 trên điện thoại &amp; máy tính.
             </p>
           </div>
         )}
       </div>
 
-      {/* Action Controls */}
-      <div className="mt-4 flex flex-wrap items-center gap-2.5">
+      {/* Primary Smartphone Press-to-Scan Trigger Button */}
+      {scanMode === 'trigger' && (
+        <button
+          type="button"
+          disabled={startingCamera}
+          onClick={() => void handlePressToScan()}
+          className={`mt-3.5 inline-flex min-h-[52px] w-full items-center justify-center gap-2.5 rounded-xl px-5 py-3 text-base font-semibold text-white transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 disabled:opacity-60 whitespace-nowrap ${
+            isArmed
+              ? 'bg-emerald-600 hover:bg-emerald-700 focus-visible:outline-emerald-600'
+              : 'bg-blue-700 hover:bg-blue-800 focus-visible:outline-blue-700'
+          }`}
+        >
+          {startingCamera ? (
+            <>
+              <Loader2 className="h-5 w-5 animate-spin" />
+              <span>Đang mở camera sau...</span>
+            </>
+          ) : isArmed ? (
+            <>
+              <Loader2 className="h-5 w-5 animate-spin" />
+              <span>Đang quét mã... (Nhấn để dừng)</span>
+            </>
+          ) : isScanning ? (
+            <>
+              <ScanLine className="h-5 w-5" />
+              <span>Nhấn để quét mã</span>
+            </>
+          ) : (
+            <>
+              <ScanLine className="h-5 w-5" />
+              <span>Mở camera &amp; Nhấn để quét</span>
+            </>
+          )}
+        </button>
+      )}
+
+      {/* Secondary Camera Controls */}
+      <div className="mt-3 flex flex-wrap items-center gap-2">
         {!isScanning ? (
           <button
             type="button"
-            onClick={() => startScanner()}
-            className="inline-flex min-h-[42px] flex-1 items-center justify-center gap-2 rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-slate-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900 whitespace-nowrap"
+            disabled={startingCamera}
+            onClick={() => void startScanner()}
+            className={`inline-flex min-h-[42px] flex-1 items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold transition-colors whitespace-nowrap ${
+              scanMode === 'auto'
+                ? 'bg-slate-900 text-white hover:bg-slate-800'
+                : 'border border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+            }`}
           >
             <Camera className="h-4 w-4" />
-            <span>Bật camera quét mã</span>
+            <span>{scanMode === 'auto' ? 'Bật camera quét tự động' : 'Chỉ bật camera ngắm trước'}</span>
           </button>
         ) : (
           <button
@@ -295,9 +507,7 @@ export const QRScannerPanel: React.FC<QRScannerPanelProps> = ({
                   key={item.code}
                   type="button"
                   onClick={() => {
-                    setScanNotice(`Đã chọn mã mẫu: ${item.code}`);
-                    setScanError(null);
-                    onScanned(item.code);
+                    commitScannedCode(item.code);
                   }}
                   className={`flex flex-col items-center rounded-lg border p-3 text-center transition-colors ${
                     active

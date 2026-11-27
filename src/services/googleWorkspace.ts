@@ -56,8 +56,13 @@ export async function fetchSharedSheetConfig(): Promise<{
   config: SpreadsheetConfig | null;
   adminEmail: string;
   staffAccess: StaffAccessPublicStatus;
+  source: 'server' | 'env' | 'none';
 }> {
-  const envAdmin = (import.meta.env.VITE_ADMIN_EMAIL || '').trim().toLowerCase();
+  const envAdmin = (
+    import.meta.env.VITE_ADMIN_EMAIL || 'nguyenanhtam2002@gmail.com'
+  )
+    .trim()
+    .toLowerCase();
   const envSheetId = extractSpreadsheetId(
     import.meta.env.VITE_DEFAULT_SPREADSHEET_ID || ''
   );
@@ -88,6 +93,7 @@ export async function fetchSharedSheetConfig(): Promise<{
         config: envFallbackConfig,
         adminEmail: envAdmin,
         staffAccess: defaultStaff,
+        source: envFallbackConfig ? 'env' : 'none',
       };
     }
     const contentType = res.headers.get('content-type') || '';
@@ -96,6 +102,7 @@ export async function fetchSharedSheetConfig(): Promise<{
         config: envFallbackConfig,
         adminEmail: envAdmin,
         staffAccess: defaultStaff,
+        source: envFallbackConfig ? 'env' : 'none',
       };
     }
     const data = (await res.json()) as {
@@ -103,16 +110,19 @@ export async function fetchSharedSheetConfig(): Promise<{
       adminEmail: string;
       staffAccess?: StaffAccessPublicStatus;
     };
+    const resolvedConfig = data.config ?? envFallbackConfig;
     return {
-      config: data.config ?? envFallbackConfig,
+      config: resolvedConfig,
       adminEmail: data.adminEmail || envAdmin,
       staffAccess: data.staffAccess ?? defaultStaff,
+      source: data.config ? 'server' : envFallbackConfig ? 'env' : 'none',
     };
   } catch {
     return {
       config: envFallbackConfig,
       adminEmail: envAdmin,
       staffAccess: defaultStaff,
+      source: envFallbackConfig ? 'env' : 'none',
     };
   }
 }
@@ -208,7 +218,16 @@ export async function staffLogin(payload: {
 export async function saveSharedSheetConfig(
   accessToken: string,
   config: SpreadsheetConfig
-): Promise<{ config: SpreadsheetConfig; adminEmail: string }> {
+): Promise<{
+  config: SpreadsheetConfig;
+  adminEmail: string;
+  savedToServer: boolean;
+}> {
+  const fallbackAdmin = (
+    import.meta.env.VITE_ADMIN_EMAIL || 'nguyenanhtam2002@gmail.com'
+  )
+    .trim()
+    .toLowerCase();
   try {
     const res = await fetch('/api/shared-config', {
       method: 'PUT',
@@ -223,7 +242,8 @@ export async function saveSharedSheetConfig(
       // Static hosting (e.g. Vercel without Express backend): return local config gracefully
       return {
         config,
-        adminEmail: (import.meta.env.VITE_ADMIN_EMAIL || '').trim(),
+        adminEmail: fallbackAdmin,
+        savedToServer: false,
       };
     }
     const data = (await res.json().catch(() => ({}))) as {
@@ -238,13 +258,15 @@ export async function saveSharedSheetConfig(
     }
     return {
       config: data.config,
-      adminEmail: data.adminEmail || '',
+      adminEmail: data.adminEmail || fallbackAdmin,
+      savedToServer: true,
     };
   } catch (err) {
     if (err instanceof TypeError) {
       return {
         config,
-        adminEmail: (import.meta.env.VITE_ADMIN_EMAIL || '').trim(),
+        adminEmail: fallbackAdmin,
+        savedToServer: false,
       };
     }
     throw err;
