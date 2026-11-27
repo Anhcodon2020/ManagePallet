@@ -22,6 +22,7 @@ import { RecordsTableView } from './components/RecordsTableView';
 import { ScanReportView } from './components/ScanReportView';
 import { SettingsAndQRView } from './components/SettingsAndQRView';
 import { SheetSetupView } from './components/SheetSetupView';
+import { ToastContainer, ToastItem, ToastVariant } from './components/ToastContainer';
 import {
   clearAccessToken,
   googleSignIn,
@@ -129,6 +130,27 @@ export default function App() {
   const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [selectedRecord, setSelectedRecord] = useState<PalletRecord | null>(null);
+  const [toasts, setToasts] = useState<ToastItem[]>([]);
+
+  const pushToast = useCallback(
+    (
+      variant: ToastVariant,
+      title: string,
+      description?: string,
+      durationMs?: number
+    ) => {
+      const id = `toast-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+      setToasts((prev) => [
+        ...prev.slice(-3),
+        { id, variant, title, description, durationMs },
+      ]);
+    },
+    []
+  );
+
+  const dismissToast = useCallback((id: string) => {
+    setToasts((prev) => prev.filter((item) => item.id !== id));
+  }, []);
 
   const activeUserEmail =
     authMode === 'staff' ? staffUser?.email || '' : user?.email || '';
@@ -411,6 +433,11 @@ export default function App() {
       // Ignore history API restrictions
     }
     setSyncError(null);
+    pushToast(
+      'success',
+      `Đã kết nối Google Sheet "${config.title}"`,
+      `Trang tính đang dùng: ${config.sheetName}`
+    );
   };
 
   const refreshRecords = useCallback(
@@ -535,6 +562,13 @@ export default function App() {
     }
 
     await refreshRecords(false);
+    pushToast(
+      'success',
+      `Đã ghi nhận lỗi pallet ${newRecord.serialNumber}`,
+      `${newRecord.transactionType} kho · Pallet ${newRecord.source} · Mức độ ${newRecord.severity}${
+        imageUrl ? ' · Có ảnh đính kèm' : ''
+      }`
+    );
   };
 
   const handleUpdateRecord = async (updated: PalletRecord) => {
@@ -551,6 +585,11 @@ export default function App() {
         );
       }
       await refreshRecords(false);
+      pushToast(
+        'success',
+        `Đã cập nhật pallet ${updated.serialNumber}`,
+        `Trạng thái: ${updated.status} · Mức độ: ${updated.severity}`
+      );
     } catch (err) {
       if (err instanceof WorkspaceAuthError) {
         handleSessionExpired();
@@ -576,6 +615,11 @@ export default function App() {
         );
       }
       await refreshRecords(false);
+      pushToast(
+        'info',
+        `Đã xóa bản ghi pallet ${record.serialNumber}`,
+        `Đã đồng bộ lại dữ liệu trên "${sheetConfig.title}".`
+      );
     } catch (err) {
       if (err instanceof WorkspaceAuthError) {
         handleSessionExpired();
@@ -1269,6 +1313,9 @@ export default function App() {
         onUpdateRecord={handleUpdateRecord}
         onDeleteRecord={handleDeleteRecord}
       />
+
+      {/* Global Toast Notifications */}
+      <ToastContainer toasts={toasts} onDismiss={dismissToast} />
     </div>
   );
 }

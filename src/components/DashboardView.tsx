@@ -10,6 +10,7 @@ import {
 } from 'recharts';
 import { ArrowRight, QrCode } from 'lucide-react';
 import { AuthMode, PalletRecord } from '../types/pallet';
+import { DefectDistributionPieChart } from './DefectDistributionPieChart';
 import { DrivePhoto } from './DrivePhoto';
 
 interface DashboardViewProps {
@@ -104,6 +105,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           <div className="h-72 animate-pulse rounded-xl border border-slate-200 bg-white" />
           <div className="h-72 animate-pulse rounded-xl border border-slate-200 bg-white" />
         </div>
+        <div className="h-72 animate-pulse rounded-xl border border-slate-200 bg-white" />
       </div>
     );
   }
@@ -299,6 +301,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           )}
         </section>
       </div>
+
+      {/* Defect Distribution Pie Chart (Factory vs Warehouse) */}
+      <DefectDistributionPieChart records={records} />
 
       {/* Real-time Recent Activity List */}
       <section className="rounded-xl border border-slate-200 bg-white">
